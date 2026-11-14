@@ -11,4 +11,4 @@ a { color: var(--accent); }
 .muted { color: var(--muted); }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px 20px; margin: 16px 0; }
 .card h2 { margin-top: 0; }
-img.logo { width: 96px; height: 96px; border-radius: 22px; display: block; margin: 24px 0 8px; }
+img.logo { width: 96px; height: 96px; border-radius: 22px; display: block; margin: 24px 0 8px; border: 1px solid var(--line); }
