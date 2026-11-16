@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>Live walk · Waylo</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="style.css">
+<style>
+  html, body { height: 100%; }
+  body { margin: 0; display: flex; flex-direction: column; }
+  #map { flex: 1; min-height: 52vh; background: var(--line); }
+  .panel { padding: 16px 16px calc(20px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 12px; max-width: 640px; width: 100%; margin: 0 auto; box-sizing: border-box; }
+  .title { display: flex; align-items: center; gap: 10px; font-size: 1.3rem; font-weight: 700; margin: 0; }
+  .dot { width: 11px; height: 11px; border-radius: 50%; background: #10B981; box-shadow: 0 0 0 4px rgba(16,185,129,.25); flex: none; }
+  .dot.off { background: #9ca3af; box-shadow: none; }
+  .meta { color: var(--muted); margin: 0; }
+  .alert { border-radius: 14px; padding: 12px 14px; display: none; }
+  .alert b { display: block; margin-bottom: 2px; }
+  .warn { background: #FFE5D1; color: #8A3300; }
+  .bad { background: #FCEBEB; color: #791F1F; }
+  .ok { background: #E2ECD3; color: #1F5C3A; }
+  .btn { display: block; text-align: center; padding: 13px; border-radius: 999px; font-weight: 600; text-decoration: none; }
+  .primary { background: #C2410C; color: #fff; }
+  .secondary { background: var(--card); color: var(--text); border: 1px solid var(--line); }
+  .fine { font-size: .82rem; color: var(--muted); text-align: center; margin: 0; }
+  .me { width: 18px; height: 18px; border-radius: 50%; background: #378ADD; border: 3px solid #fff; box-shadow: 0 0 0 8px rgba(55,138,221,.22); }
+</style>
+</head>
+<body>
+<div id="map" role="img" aria-label="Map with the walker's live position"></div>
+<main class="panel" aria-live="polite">
+  <p class="title"><span id="dot" class="dot off"></span><span id="title">Loading the walk…</span></p>
+  <p class="meta" id="meta"></p>
+  <div class="alert warn" id="stopped"></div>
+  <div class="alert bad" id="stale"></div>
+  <div class="alert ok" id="done"></div>
+  <a class="btn secondary" id="maps" href="#" target="_blank" rel="noopener" style="display:none">Open in Maps</a>
+  <p class="fine">Shared from Waylo. This link stops working when the walk ends, or after 6 hours at most.</p>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+(function () {
+  var SUPABASE_URL = 'https://vssrqkthmajtvoncopun.supabase.co';
+  var ANON_KEY = 'sb_publishable_9EEjz9aHOGUKnui314O4TQ_4RSApNVt';
+  var token = new URLSearchParams(location.hash.slice(1)).get('t') || '';
+  var el = function (id) { return document.getElementById(id); };
+  var map = L.map('map', { zoomControl: true, attributionControl: true }).setView([20, 0], 2);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
+  var marker = null, circle = null, first = true, timer = null;
+
+  function mins(ms) { return Math.max(0, Math.round(ms / 60000)); }
+  function fmtDur(s) { var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60); return h > 0 ? h + ' h ' + m + ' min' : m + ' min'; }
+  function fmtMi(m) { return (m / 1609.344).toFixed(1) + ' mi'; }
+  function ago(ms) { var s = Math.round(ms / 1000); if (s < 5) return 'just now'; if (s < 60) return s + ' seconds ago'; var m = Math.round(s / 60); return m === 1 ? '1 minute ago' : m + ' minutes ago'; }
+  function clock(iso) { return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
+  function show(id, html) { var n = el(id); n.innerHTML = html || ''; n.style.display = html ? 'block' : 'none'; }
+  function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]; }); }
+
+  function render(d) {
+    if (!d) {
+      el('dot').className = 'dot off';
+      el('title').textContent = 'This walk isn’t being shared';
+      el('meta').textContent = 'The link may have expired, or it was copied incompletely.';
+      show('stopped'); show('stale'); show('done'); el('maps').style.display = 'none';
+      return false;
+    }
+    var name = esc(d.label || 'Your walker');
+    var now = Date.parse(d.now) || Date.now();
+    if (d.status !== 'live') {
+      el('dot').className = 'dot off';
+      el('title').innerHTML = name + ' finished the walk';
+      el('meta').textContent = fmtMi(d.distanceM) + ' in ' + fmtDur(d.movingS) + (d.endedAt ? ', ' + clock(d.endedAt) : '');
+      show('stopped'); show('stale');
+      show('done', '<b>' + name + ' finished the walk</b>The live map is no longer shared.');
+      el('maps').style.display = 'none';
+      if (marker) { map.removeLayer(marker); marker = null; }
+      if (circle) { map.removeLayer(circle); circle = null; }
+      return false;
+    }
+    el('dot').className = 'dot';
+    el('title').innerHTML = name + (d.paused ? ' paused the walk' : ' is walking');
+    el('meta').textContent = 'Updated ' + ago(now - Date.parse(d.updatedAt)) + ' · ' + fmtMi(d.distanceM) + ' · ' + fmtDur(d.movingS);
+    var staleMin = mins(now - Date.parse(d.updatedAt));
+    show('stale', staleMin >= 10 ? '<b>No update for ' + staleMin + ' minutes</b>Their phone may be offline or out of battery.' : '');
+    var stillMin = d.lastMovedAt ? mins(now - Date.parse(d.lastMovedAt)) : 0;
+    show('stopped', stillMin >= d.stopAlertMin ? '<b>' + name + ' hasn’t moved for ' + stillMin + ' minutes</b>Last seen at ' + clock(d.lastMovedAt) + '. Maybe give them a call.' : '');
+    show('done');
+    if (typeof d.lat === 'number' && typeof d.lng === 'number') {
+      var ll = [d.lat, d.lng];
+      if (!marker) marker = L.marker(ll, { icon: L.divIcon({ className: '', html: '<div class="me"></div>', iconSize: [24, 24], iconAnchor: [12, 12] }) }).addTo(map);
+      else marker.setLatLng(ll);
+      var acc = Math.min(200, d.accuracyM || 0);
+      if (acc > 0) { if (!circle) circle = L.circle(ll, { radius: acc, color: '#378ADD', weight: 1, fillOpacity: 0.08 }).addTo(map); else circle.setLatLng(ll).setRadius(acc); }
+      if (first) { map.setView(ll, 16); first = false; } else if (!map.getBounds().pad(-0.2).contains(ll)) { map.panTo(ll); }
+      var maps = el('maps');
+      maps.href = 'https://maps.apple.com/?ll=' + d.lat.toFixed(5) + ',' + d.lng.toFixed(5) + '&q=' + encodeURIComponent((d.label || 'Walker') + "'s location");
+      maps.style.display = 'block';
+    }
+    return true;
+  }
+
+  function load() {
+    if (!/^[A-Za-z0-9_-]{16,64}$/.test(token)) { render(null); return; }
+    fetch(SUPABASE_URL + '/rest/v1/rpc/get_walk_share', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: ANON_KEY, Authorization: 'Bearer ' + ANON_KEY },
+      body: JSON.stringify({ p_token: token })
+    }).then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) { var live = render(d); clearTimeout(timer); if (live) timer = setTimeout(load, 15000); })
+      .catch(function () { el('meta').textContent = 'Can’t reach Waylo right now. Trying again…'; clearTimeout(timer); timer = setTimeout(load, 20000); });
+  }
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) load(); });
+  load();
+})();
+</script>
+</body>
+</html>
